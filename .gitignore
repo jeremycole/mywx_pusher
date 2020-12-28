@@ -7,6 +7,10 @@
 /spec/reports/
 /tmp/
 /vendor/
+*.gem
+
+.byebug_history
+.idea
 
 # rspec failure tracking
 .rspec_status

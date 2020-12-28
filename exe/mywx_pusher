@@ -1,4 +1,144 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require 'logger'
+require 'optparse'
+require 'ostruct'
 require 'mywx_pusher'
+
+class MywxPusherCommand
+  attr_reader :options
+
+  class BadOptionError < StandardError; end
+  class CollectError < StandardError; end
+  class PushError < StandardError; end
+
+  def initialize
+    initialize_options
+  end
+
+  def initialize_options
+    @options = OpenStruct.new(
+      mywx_base_uri: 'https://www.mywx.live/',
+      mywx_station_slug: nil,
+      mywx_secret_key: nil,
+      interval: 10
+    )
+  end
+
+  def logger
+    @logger ||= Logger.new($stderr, level: :info)
+  end
+
+  def option_parser
+    @option_parser ||= OptionParser.new do |opts|
+      opts.on('-h', '--help', 'Show this help.') do
+        puts opts
+        exit 0
+      end
+
+      opts.on('-d', '--debug', 'Enable debug mode') { logger.level = Logger::DEBUG }
+
+      opts.on('-w', '--weatherlink-host=HOST', '') { |o| options.weatherlink_host = o }
+
+      opts.on('-b', '--mywx-base-uri=URI', '') { |o| options.mywx_base_uri = o }
+      opts.on('-s', '--mywx-station-slug=SLUG', '') { |o| options.mywx_station_slug = o }
+      opts.on('-k', '--mywx-secret-key=KEY', '') { |o| options.mywx_secret_key = o }
+
+      opts.on('-i', '--interval=SECONDS', '') { |o| options.interval = o.to_i }
+    end
+  end
+
+  def parse_options(args)
+    option_parser.parse!(args)
+    validate_options
+
+    self
+  end
+
+  def validate_options
+    raise BadOptionError, 'Missing required --mywx-station-slug/-s option' unless options.mywx_station_slug
+    raise BadOptionError, 'Missing required --mywx-secret-key/-k option' unless options.mywx_secret_key
+    raise BadOptionError, 'Missing required --weatherlink-host/-w option' unless options.weatherlink_host
+
+    true
+  end
+
+  def mywx_push_data_uri
+    @mywx_push_data_uri ||= URI.join(options.mywx_base_uri, "/stations/#{options.mywx_station_slug}/push_data")
+  end
+
+  def collect_data
+    logger.debug("Collecting data from #{options.weatherlink_host}...")
+
+    ts = Time.now.to_i
+
+    begin
+      current_conditions = client.current_conditions
+    rescue StandardError => e
+      raise CollectError, e
+    end
+
+    iss_record = current_conditions.find { |sd| sd.record_type.id == 1 }
+    lss_pressure_record = current_conditions.find { |sd| sd.record_type.id == 3 }
+
+    data = {
+      ts: ts,
+      temperature: iss_record.temp.scalar.to_f.round(2),
+      dew_point: iss_record.dew_point.scalar.to_f.round(2),
+      humidity: iss_record.hum.scalar.to_f.round(2),
+      pressure: lss_pressure_record.bar_sea_level.scalar.to_f.round(2),
+      wind_speed: iss_record.wind_speed_avg_last_1_min.scalar.to_f.round(2),
+      wind_direction: iss_record.wind_dir_scalar_avg_last_1_min.scalar.to_i,
+      rain_rate: iss_record.rain_rate_last.scalar.to_f.round(2),
+      solar_radiation: iss_record.solar_rad.scalar.to_f.round(2),
+    }
+
+    logger.debug("Collected data (#{data.size} variables): #{data}")
+
+    data
+  end
+
+  def post_data(data)
+    logger.debug("Sending data (#{data.size} variables)...")
+    response = Net::HTTP.post_form(mywx_push_data_uri, { secret_key: options.mywx_secret_key, data: data.to_json })
+
+    unless response.code == '200'
+      raise PushError, "Response from MyWX API: #{response.code} #{response.message}: #{response.body}"
+    end
+
+    logger.debug("Response from MyWX API: #{response.code} #{response.message}")
+    true
+  end
+
+  def client
+    @client ||= WeatherLink::LocalClient.new(
+      host: options.weatherlink_host,
+      desired_units: WeatherLink::METRIC_WEATHER_UNITS
+    )
+  end
+
+  def run
+    logger.info(
+      format(
+        'Collecting from %s, pushing to %s every %i seconds...',
+        options.weatherlink_host,
+        mywx_push_data_uri,
+        options.interval
+      )
+    )
+
+    loop do
+      begin
+        data = collect_data
+        post_data(data)
+        logger.info("Collected and pushed #{data.size} variables.")
+      rescue StandardError => e
+        logger.warn("Failed to collect or send data: #{e.class.name}: #{e}")
+      end
+      sleep options.interval # TODO: should try to align
+    end
+  end
+end
+
+MywxPusherCommand.new.parse_options(ARGV).run

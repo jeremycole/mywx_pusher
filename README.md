@@ -1,28 +1,22 @@
-# MywxPusher
+# MyWX Pusher
 
-Welcome to your new gem! In this directory, you'll find the files you need to be able to package up your Ruby library into a gem. Put your Ruby code in the file `lib/mywx_pusher`. To experiment with that code, run `bin/console` for an interactive prompt.
-
-TODO: Delete this and the text above, and describe your gem
+MyWX Pusher allows you to send the data directly from a Davis Instruments weather station using a [WeatherLink Live](https://www.davisinstruments.com/weatherlink/) or [AirLink](https://www.davisinstruments.com/airlink/) to [MyWX](https://www.mywx.live/) for real time display on your weather panel.
 
 ## Installation
 
-Add this line to your application's Gemfile:
-
-```ruby
-gem 'mywx_pusher'
-```
-
-And then execute:
-
-    $ bundle install
-
 Or install it yourself as:
 
-    $ gem install mywx_pusher
+```
+$ gem install mywx_pusher
+```
 
 ## Usage
 
-TODO: Write usage instructions here
+Create your station on [MyWX](https://www.mywx.live/) and get the station slug and secret key, and run `mywx_pusher` as follows:
+
+```
+mywx_pusher -w <local ip address> -s <station slug> -k <secret key>
+```
 
 ## Development
 
@@ -32,7 +26,7 @@ To install this gem onto your local machine, run `bundle exec rake install`. To 
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/[USERNAME]/mywx_pusher.
+Bug reports and pull requests are welcome on GitHub at [jeremycole/mywx_pusher](https://github.com/jeremycole/mywx_pusher).
 
 
 ## License
