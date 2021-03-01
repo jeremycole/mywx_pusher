@@ -40,6 +40,7 @@ class MywxPusherCommand
       opts.on('-d', '--debug', 'Enable debug mode') { logger.level = Logger::DEBUG }
 
       opts.on('-w', '--weatherlink-host=HOST', '') { |o| options.weatherlink_host = o }
+      opts.on('-a', '--airlink-host=HOST', '') { |o| options.airlink_host = o }
 
       opts.on('-b', '--mywx-base-uri=URI', '') { |o| options.mywx_base_uri = o }
       opts.on('-s', '--mywx-station-slug=SLUG', '') { |o| options.mywx_station_slug = o }
@@ -69,18 +70,26 @@ class MywxPusherCommand
   end
 
   def collect_data
-    logger.debug("Collecting data from #{options.weatherlink_host}...")
 
     ts = Time.now.to_i
 
     begin
-      current_conditions = client.current_conditions
+      logger.debug("Collecting data from #{options.weatherlink_host}...")
+      weatherlink_current_conditions = weatherlink_client.current_conditions
     rescue StandardError => e
       raise CollectError, e
     end
 
-    iss_record = current_conditions.find { |sd| sd.record_type.id == 1 }
-    lss_pressure_record = current_conditions.find { |sd| sd.record_type.id == 3 }
+    begin
+      logger.debug("Collecting data from #{options.airlink_host}...")
+      airlink_current_conditions = airlink_client&.current_conditions
+    rescue StandardError => e
+      raise CollectError, e
+    end
+
+    iss_record = weatherlink_current_conditions.find { |sd| sd.record_type.id == 1 }
+    lss_pressure_record = weatherlink_current_conditions.find { |sd| sd.record_type.id == 3 }
+    airlink_record = airlink_current_conditions&.find { |sd| sd.record_type.id == 6 }
 
     data = {
       ts: ts,
@@ -93,6 +102,18 @@ class MywxPusherCommand
       rain_rate: iss_record.rain_rate_last.scalar.to_f.round(2),
       solar_radiation: iss_record.solar_rad.scalar.to_f.round(2),
     }
+
+    if airlink_record
+      air_quality_data = {
+        air_quality: {
+          pm_1: airlink_record.pm_1,
+          pm_2p5: airlink_record.pm_2p5,
+          pm_10: airlink_record.pm_10,
+        }
+      }
+
+      data.merge!(air_quality_data)
+    end
 
     logger.debug("Collected data (#{data.size} variables): #{data}")
 
@@ -111,9 +132,18 @@ class MywxPusherCommand
     true
   end
 
-  def client
-    @client ||= WeatherLink::LocalClient.new(
+  def weatherlink_client
+    @weatherlink_client ||= WeatherLink::LocalClient.new(
       host: options.weatherlink_host,
+      desired_units: WeatherLink::METRIC_WEATHER_UNITS
+    )
+  end
+
+  def airlink_client
+    return unless options.airlink_host
+
+    @airlink_client ||= WeatherLink::LocalClient.new(
+      host: options.airlink_host,
       desired_units: WeatherLink::METRIC_WEATHER_UNITS
     )
   end
@@ -121,8 +151,9 @@ class MywxPusherCommand
   def run
     logger.info(
       format(
-        'Collecting from %s, pushing to %s every %i seconds...',
+        'Collecting weather data from %s%s, pushing to %s every %i seconds...',
         options.weatherlink_host,
+        options.airlink_host ? " and air quality data from #{options.airlink_host}" : '',
         mywx_push_data_uri,
         options.interval
       )
