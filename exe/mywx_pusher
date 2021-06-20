@@ -19,6 +19,7 @@ class MywxPusherCommand
 
   def initialize_options
     @options = OpenStruct.new(
+      debug: false,
       mywx_base_uri: 'https://www.mywx.live/',
       mywx_station_slug: nil,
       mywx_secret_key: nil,
@@ -37,10 +38,11 @@ class MywxPusherCommand
         exit 0
       end
 
-      opts.on('-d', '--debug', 'Enable debug mode') { logger.level = Logger::DEBUG }
+      opts.on('-d', '--debug', 'Enable debug mode') { options.debug = true; logger.level = Logger::DEBUG }
 
       opts.on('-w', '--weatherlink-host=HOST', '') { |o| options.weatherlink_host = o }
-      opts.on('-a', '--airlink-host=HOST', '') { |o| options.airlink_host = o }
+      opts.on('-a', '--outdoor-airlink-host=HOST', '') { |o| options.outdoor_airlink_host = o }
+      opts.on('-A', '--indoor-airlink-host=HOST', '') { |o| options.indoor_airlink_host = o }
 
       opts.on('-b', '--mywx-base-uri=URI', '') { |o| options.mywx_base_uri = o }
       opts.on('-s', '--mywx-station-slug=SLUG', '') { |o| options.mywx_station_slug = o }
@@ -80,16 +82,41 @@ class MywxPusherCommand
       raise CollectError, e
     end
 
-    begin
-      logger.debug("Collecting data from #{options.airlink_host}...")
-      airlink_current_conditions = airlink_client&.current_conditions
-    rescue StandardError => e
-      raise CollectError, e
-    end
-
     iss_record = weatherlink_current_conditions.find { |sd| sd.record_type.id == 1 }
     lss_pressure_record = weatherlink_current_conditions.find { |sd| sd.record_type.id == 3 }
-    airlink_record = airlink_current_conditions&.find { |sd| sd.record_type.id == 6 }
+
+    outdoor_airlink_current_conditions = nil
+    if options.outdoor_airlink_host
+      begin
+        logger.debug("Collecting data from #{options.outdoor_airlink_host}...")
+        outdoor_airlink_current_conditions = airlink_client(options.outdoor_airlink_host)&.current_conditions
+      rescue StandardError => e
+        raise CollectError, e
+      end
+    end
+
+    outdoor_airlink_record = outdoor_airlink_current_conditions&.find { |sd| sd.record_type.id == 6 }
+
+    indoor_airlink_current_conditions = nil
+    if options.outdoor_airlink_host
+      begin
+        logger.debug("Collecting data from #{options.indoor_airlink_host}...")
+        indoor_airlink_current_conditions = airlink_client(options.indoor_airlink_host)&.current_conditions
+      rescue StandardError => e
+        raise CollectError, e
+      end
+    end
+
+    indoor_airlink_record = indoor_airlink_current_conditions&.find { |sd| sd.record_type.id == 6 }
+
+    if options.debug
+      pp({
+        iss_record: iss_record,
+        lss_pressure_record: lss_pressure_record,
+        outdoor_airlink_record: outdoor_airlink_record,
+        indoor_airlink_record: indoor_airlink_record,
+      })
+    end
 
     data = {
       ts: ts,
@@ -97,22 +124,49 @@ class MywxPusherCommand
       dew_point: iss_record.dew_point.scalar.to_f.round(2),
       humidity: iss_record.hum.scalar.to_f.round(2),
       pressure: lss_pressure_record.bar_sea_level.scalar.to_f.round(2),
+      pressure_absolute: lss_pressure_record.bar_absolute.scalar.to_f.round(2),
+      pressure_trend: lss_pressure_record.bar_trend.scalar.to_f.round(2),
       wind_speed: iss_record.wind_speed_avg_last_1_min.scalar.to_f.round(2),
       wind_direction: iss_record.wind_dir_scalar_avg_last_1_min.scalar.to_i,
+      wind_speed_10_minutes_max: iss_record.wind_speed_hi_last_10_min.scalar.to_f.round(2),
+      wind_direction_10_minutes_max: iss_record.wind_dir_at_hi_speed_last_10_min.scalar.to_i,
       rain_rate: iss_record.rain_rate_last.scalar.to_f.round(2),
       solar_radiation: iss_record.solar_rad.scalar.to_f.round(2),
+      uv_index: iss_record.uv_index.round(2),
     }
 
-    if airlink_record
-      air_quality_data = {
-        air_quality: {
-          pm_1: airlink_record.pm_1,
-          pm_2p5: airlink_record.pm_2p5,
-          pm_10: airlink_record.pm_10,
+    if outdoor_airlink_record
+      data.merge!(
+        {
+          air_quality: {
+            pm_1: outdoor_airlink_record.pm_1,
+            pm_2p5: outdoor_airlink_record.pm_2p5,
+            pm_2p5_last_1_hour: outdoor_airlink_record.pm_2p5_last_1_hour,
+            pm_2p5_last_24_hours: outdoor_airlink_record.pm_2p5_last_24_hours,
+            pm_10: outdoor_airlink_record.pm_10,
+            pm_10_last_1_hour: outdoor_airlink_record.pm_10_last_1_hour,
+            pm_10_last_24_hours: outdoor_airlink_record.pm_10_last_24_hours,
+          }
         }
-      }
+      )
+    end
 
-      data.merge!(air_quality_data)
+    if indoor_airlink_record
+      data.merge!(
+        {
+          indoor_temperature: indoor_airlink_record.temp.scalar.to_f.round(2),
+          indoor_humidity: indoor_airlink_record.hum.scalar.to_f.round(2),
+          indoor_air_quality: {
+            pm_1: indoor_airlink_record.pm_1,
+            pm_2p5: indoor_airlink_record.pm_2p5,
+            pm_2p5_last_1_hour: indoor_airlink_record.pm_2p5_last_1_hour,
+            pm_2p5_last_24_hours: indoor_airlink_record.pm_2p5_last_24_hours,
+            pm_10: indoor_airlink_record.pm_10,
+            pm_10_last_1_hour: indoor_airlink_record.pm_10_last_1_hour,
+            pm_10_last_24_hours: indoor_airlink_record.pm_10_last_24_hours,
+          }
+        }
+      )
     end
 
     logger.debug("Collected data (#{data.size} variables): #{data}")
@@ -139,11 +193,12 @@ class MywxPusherCommand
     )
   end
 
-  def airlink_client
-    return unless options.airlink_host
+  def airlink_client(airlink_host)
+    return unless airlink_host
 
-    @airlink_client ||= WeatherLink::LocalClient.new(
-      host: options.airlink_host,
+    @airlink_client ||= {}
+    @airlink_client[airlink_host] ||= WeatherLink::LocalClient.new(
+      host: airlink_host,
       desired_units: WeatherLink::METRIC_WEATHER_UNITS
     )
   end
@@ -151,9 +206,10 @@ class MywxPusherCommand
   def run
     logger.info(
       format(
-        'Collecting weather data from %s%s, pushing to %s every %i seconds...',
+        'Collecting weather data from %s%s%s, pushing to %s every %i seconds...',
         options.weatherlink_host,
-        options.airlink_host ? " and air quality data from #{options.airlink_host}" : '',
+        options.outdoor_airlink_host ? ", outdoor air quality data from #{options.outdoor_airlink_host}" : '',
+        options.outdoor_airlink_host ? ", indoor air quality data from #{options.indoor_airlink_host}" : '',
         mywx_push_data_uri,
         options.interval
       )
